@@ -1,6 +1,5 @@
 import streamlit as st
 import json
-import pyperclip
 from copy import deepcopy
 import uuid
 
@@ -45,6 +44,8 @@ def initialize_session_state():
         st.session_state.json_blocks = {}
     if 'block_counter' not in st.session_state:
         st.session_state.block_counter = 0
+    if 'generated_output' not in st.session_state:
+        st.session_state.generated_output = ""
 
 def create_empty_template():
     """Create a template with all values set to empty/null"""
@@ -82,34 +83,38 @@ def clean_json_data(data):
         for key, value in data.items():
             if isinstance(value, (dict, list)):
                 cleaned_value = clean_json_data(value)
-                if cleaned_value:  # Only add if not empty
-                    cleaned[key] = cleaned_value
-            elif value is not None and value != "" and value != []:
+                if cleaned_value or (isinstance(cleaned_value, list) and len(cleaned_value) == 0):
+                    # Keep empty lists if they were explicitly set
+                    if not (isinstance(cleaned_value, dict) and len(cleaned_value) == 0):
+                        cleaned[key] = cleaned_value
+            elif value is not None and value != "":
                 cleaned[key] = value
         return cleaned
     elif isinstance(data, list):
-        return [clean_json_data(item) for item in data if item is not None and item != "" and item != []]
+        cleaned_list = []
+        for item in data:
+            if isinstance(item, (dict, list)):
+                cleaned_item = clean_json_data(item)
+                if cleaned_item or (isinstance(cleaned_item, list) and len(cleaned_item) == 0):
+                    cleaned_list.append(cleaned_item)
+            elif item is not None and item != "":
+                cleaned_list.append(item)
+        return cleaned_list
     else:
         return data
 
-def parse_json_value(value_str):
-    """Parse a string value to appropriate JSON type"""
-    if value_str.strip() == "":
-        return None
+def generate_final_output():
+    """Generate the final JSON output from all blocks"""
+    all_blocks = []
+    for block_data in st.session_state.json_blocks.values():
+        clean_data = clean_json_data(block_data['data'])
+        if clean_data:  # Only include non-empty blocks
+            all_blocks.append(clean_data)
     
-    try:
-        # Try to parse as JSON first (handles null, arrays, objects)
-        return json.loads(value_str)
-    except:
-        try:
-            # Try to parse as number
-            if '.' in value_str:
-                return float(value_str)
-            else:
-                return int(value_str)
-        except:
-            # Return as string if all else fails
-            return value_str
+    if all_blocks:
+        return json.dumps(all_blocks, indent=2)
+    else:
+        return "[]"
 
 def render_json_editor(block_id, block_data):
     """Render JSON editor for a single block"""
@@ -125,7 +130,7 @@ def render_json_editor(block_id, block_data):
         edited_json_str = st.text_area(
             "Edit JSON:",
             value=json_str,
-            height=400,
+            height=300,
             key=f"json_editor_{block_id}",
             help="Edit the JSON directly. Use null for null values, [] for empty arrays."
         )
@@ -140,21 +145,20 @@ def render_json_editor(block_id, block_data):
     
     with col2:
         st.markdown("#### Actions")
+        
         if st.button("🗑️ Delete Block", key=f"delete_{block_id}", type="secondary"):
             remove_json_block(block_id)
             st.rerun()
         
-        if st.button("📋 Copy This Block", key=f"copy_{block_id}"):
-            try:
-                clean_data = clean_json_data(block_data['data'])
-                if clean_data:
-                    json_output = json.dumps(clean_data, indent=2)
-                    pyperclip.copy(json_output)
-                    st.success("✅ Copied to clipboard!")
-                else:
-                    st.warning("⚠️ Block is empty - nothing to copy")
-            except Exception as e:
-                st.error(f"❌ Copy failed: {str(e)}")
+        st.markdown("---")
+        
+        # Preview cleaned data for this block
+        clean_data = clean_json_data(block_data['data'])
+        if clean_data:
+            st.markdown("**Preview (cleaned):**")
+            st.json(clean_data)
+        else:
+            st.info("Block is empty")
 
 def main():
     """Main application function"""
@@ -165,7 +169,7 @@ def main():
     st.markdown("Generate and manage multiple JSON test cases for your Health Score API")
     
     # Control panel
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+    col1, col2, col3 = st.columns([2, 2, 2])
     
     with col1:
         if st.button("➕ Add New JSON Block", type="primary"):
@@ -180,25 +184,41 @@ def main():
         if st.button("🧹 Clear All Blocks", type="secondary"):
             st.session_state.json_blocks = {}
             st.session_state.block_counter = 0
+            st.session_state.generated_output = ""
             st.rerun()
     
-    with col4:
-        if st.button("📋 Copy All to Clipboard", type="primary"):
-            try:
-                all_blocks = []
-                for block_data in st.session_state.json_blocks.values():
-                    clean_data = clean_json_data(block_data['data'])
-                    if clean_data:  # Only include non-empty blocks
-                        all_blocks.append(clean_data)
-                
-                if all_blocks:
-                    json_output = json.dumps(all_blocks, indent=2)
-                    pyperclip.copy(json_output)
-                    st.success(f"✅ Copied {len(all_blocks)} blocks to clipboard!")
-                else:
-                    st.warning("⚠️ No valid blocks to copy")
-            except Exception as e:
-                st.error(f"❌ Copy failed: {str(e)}")
+    st.divider()
+    
+    # Generate Output Section
+    st.markdown("### 🎯 Generate Final Output")
+    col1, col2 = st.columns([2, 2])
+    
+    with col1:
+        if st.button("🚀 Generate JSON Output", type="primary"):
+            st.session_state.generated_output = generate_final_output()
+            st.success("✅ JSON output generated!")
+    
+    with col2:
+        valid_blocks = sum(1 for block_data in st.session_state.json_blocks.values() 
+                          if clean_json_data(block_data['data']))
+        st.metric("Valid Blocks", valid_blocks)
+    
+    # Display generated output
+    if st.session_state.generated_output:
+        st.markdown("#### 📄 Generated JSON Array:")
+        st.code(st.session_state.generated_output, language="json")
+        
+        # Download button
+        st.download_button(
+            label="💾 Download JSON File",
+            data=st.session_state.generated_output,
+            file_name="health_score_test_cases.json",
+            mime="application/json",
+            type="primary"
+        )
+        
+        # Copy instructions
+        st.info("💡 **To copy:** Click in the code box above and use Ctrl+A (select all) then Ctrl+C (copy)")
     
     st.divider()
     
@@ -216,6 +236,8 @@ def main():
             add_new_json_block()
             st.rerun()
     else:
+        st.markdown("### 📝 JSON Blocks")
+        
         # Sort blocks by counter for consistent display order
         sorted_blocks = sorted(
             st.session_state.json_blocks.items(), 
@@ -230,12 +252,13 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown(
-        "💡 **Tips:**\n"
-        "- Use `null` for null values\n"
-        "- Use `[]` for empty arrays\n" 
-        "- Use `{}` for empty objects\n"
-        "- Decimal values like `0.7` and `8.6` are supported\n"
-        "- Empty fields will be removed when copying to clipboard"
+        "💡 **Usage Tips:**\n"
+        "- Use `null` for null values (not `None`)\n"
+        "- Use `[]` for empty arrays, `{}` for empty objects\n" 
+        "- Decimal values like `0.7`, `8.6`, `12.34` are fully supported\n"
+        "- Empty fields (`null`, `\"\"`, `[]`) are automatically removed from final output\n"
+        "- Click 'Generate JSON Output' to create the final array for API testing\n"
+        "- Use the download button to save your test cases as a `.json` file"
     )
 
 if __name__ == "__main__":
